@@ -1,0 +1,967 @@
+---
+title: "Assignment 2 DataScience"
+output:
+  html_notebook: default
+  word_document: default
+  html_document:
+    df_print: paged
+---
+#install necessary libraries 
+```{r}
+#install.packages('gridExtra') 
+#install.packages('ggthemes') 
+#install.packages('caret') 
+#url<- "https://cran.r-project.org/src/contrib/Archive/randomForest/randomForest_4.6-12.tar.gz"
+#install.packages(url, repos=NULL, type="source") 
+#install.packages('party')
+```
+#import libraries
+```{r}
+library(plyr) #to summarize data
+library(corrplot)
+library(ggplot2)
+library(gridExtra) #multiple plots
+library(ggthemes) # package of ggplot themes
+library(caret) #classification & regression
+library(MASS)
+library(party) #visualize decision trees
+```
+#read the dataset so we can use it 
+#load the dataset 
+```{r}
+Churn_Dataset <- read.csv("Churn Dataset.csv")
+```
+#summarize the details of the dataset 
+```{r}
+summary(Churn_Dataset)
+```
+#different way to summarize the dataset
+```{r}
+str(Churn_Dataset)
+```
+## comment on the data : 
+according to the summary of the data 
+- customerID is not useful because it give me information about the user and i find it not useful
+- MultipleLines contains values like "no phone service" which  should be changed to "No"
+- OnlineSecurity, OnlineBackup, DeviceProtection, techSupport, StreamingTV and StreamingMovies  
+contains values like "no internet service" which  should be changed to "No"
+
+#Data Preparation & Preprocessing
+#check the distribution of Churn
+```{r}
+prop.table(table(Churn_Dataset$Churn))
+```
+#-------------------------------------------------------------------------------
+# 1. Generate a scatterplot matrix to show the relationships between the variables and a heatmap to determine correlated attributes 
+#-------------------------------------------------------------------------------
+
+# Scatter plot matrix to show the relationship between variables
+```{r}
+library("dplyr")
+numeric_data=select_if(Churn_Dataset,is.numeric)
+numeric_data$SeniorCitizen=NULL
+plot(numeric_data)
+```
+#heatmap to determine correlated attributes
+```{r}
+#install.packages("Hmisc")
+```
+
+```{r}
+library(Hmisc)
+ccs=as.matrix(numeric_data)
+correlation=rcorr(ccs, type="pearson") # You can also use "spearman"
+correlation_matrix=data.matrix(correlation$r)
+correlation_matrix
+heatmap(correlation_matrix)
+```
+#-------------------------------------------------------------------------------
+# 2. Ensure data is in the correct format for downstream processes 
+#-------------------------------------------------------------------------------
+
+#use sapply to check the number of missing values in each columns
+```{r}
+sapply(Churn_Dataset, function(x) sum(is.na(x)))
+#complete.cases: Return a logical vector indicating which cases are complete, i.e., have no missing values.
+Churn_Dataset <- Churn_Dataset[complete.cases(Churn_Dataset), ]
+```
+as shown in the result "TotalChages" contains 11 null value. 
+i will use the median to fill these null values 
+```{r}
+library(Hmisc)
+Churn_Dataset$TotalCharges=impute(Churn_Dataset$TotalCharges,median)
+```
+#use sapply to check the number of missing values in each columns after filling the missing values with median
+```{r}
+sapply(Churn_Dataset, function(x) sum(is.na(x)))
+#complete.cases: Return a logical vector indicating which cases are complete, i.e., have no missing values.
+Churn_Dataset <- Churn_Dataset[complete.cases(Churn_Dataset), ]
+```
+#change “No internet service” to “No” for some columns
+```{r}
+cols_recode1 <- c(10:15)
+for(i in 1:ncol(Churn_Dataset[,cols_recode1])) 
+{
+  str(Churn_Dataset[,i])
+}
+```
+
+```{r}
+cols_recode1 <- c(10:15)
+for(i in 1:ncol(Churn_Dataset[,cols_recode1])) 
+{
+  Churn_Dataset[,cols_recode1][,i] <- as.factor(plyr::mapvalues(Churn_Dataset[,cols_recode1][,i], from=c("No internet service"),to=c("No"))) 
+}
+```
+
+#change “No phone service” to “No” for column “MultipleLines
+```{r}
+Churn_Dataset$MultipleLines <- as.factor(plyr::mapvalues(Churn_Dataset$MultipleLines,from=c("No phone service"),to=c("No")))
+```
+#see the data after cleaning
+```{r}
+summary(Churn_Dataset)
+```
+#check the minimum value and the maximum value in the dataset. 
+```{r}
+print("the minimum is : ");min(Churn_Dataset$tenure)
+print("the maximum is : ");max(Churn_Dataset$tenure)
+```
+#prepare the function to be applaied for each element in tenure feature in the dataset
+```{r}
+group_tenure <- function(tenure)
+{
+  if (tenure >= 0 & tenure <= 12)
+    {
+        return('0-12 Month')
+    }
+  else if(tenure > 12 & tenure <= 24)
+    {
+        return('12-24 Month')
+    }
+  else if (tenure > 24 & tenure <= 48)
+    {
+        return('24-48 Month')
+    }
+  else if (tenure > 48 & tenure <=60)
+    {
+        return('48-60 Month')
+    }
+  else if (tenure > 60)
+    {
+        return('> 60 Month')
+    }
+}
+```
+#applay the function to each element in the original feature and save the results as a new column in the dataset. 
+```{r}
+Churn_Dataset$tenure_group <- sapply(Churn_Dataset$tenure,group_tenure)
+Churn_Dataset$tenure_group <- as.factor(Churn_Dataset$tenure_group)
+```
+
+#Change the values in column “SeniorCitizen” from 0 or 1 to “No” or “Yes”.
+```{r}
+Churn_Dataset$SeniorCitizen <- as.factor(plyr::mapvalues(Churn_Dataset$SeniorCitizen,from=c("0","1"),to=c("No", "Yes")))
+```
+#Remove the columns we do not need for the analysis:
+```{r}
+Churn_Dataset$customerID <- NULL
+Churn_Dataset$tenure <- NULL
+```
+i have deleted the tenure column because i have already built another column "tenure_group" based on it
+# Drop th duplicated values 
+```{r}
+print("before deleting the dublicated values ")
+print(sum(duplicated(Churn_Dataset)))
+Churn_Dataset=Churn_Dataset[!duplicated(Churn_Dataset),]
+print("after deleting the dublicated values ")
+print(sum(duplicated(Churn_Dataset)))
+```
+#*******************************************************************************
+##Exploratory data analysis and feature selection
+#check all the features and return the numeric variables 
+```{r}
+numeric.var <- sapply(Churn_Dataset, is.numeric) ## Find numerical variables
+numeric.var
+```
+#plot the correlation matrix for all the numeric features just to reduce number of features that's going to be the input of the model 
+```{r}
+corr.matrix <- cor(Churn_Dataset[,numeric.var])  ## Calculate the correlation matrix
+corrplot(corr.matrix, main="\n\nCorrelation Plot for Numeric features", method="number")
+```
+after prepare the data i built again the correlation matrix so i can see the features that give me no new information by checking their correlations 
+
+The Monthly Charges and Total Charges features are correlated. So one of them will be removed from the model.I will remove Total Charges.
+
+```{r}
+Churn_Dataset$TotalCharges <- NULL
+```
+
+## Bar plots of categorical variables
+```{r}
+p1 <- ggplot(Churn_Dataset, aes(x=gender)) + ggtitle("Gender") + xlab("Gender") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+p2 <- ggplot(Churn_Dataset, aes(x=SeniorCitizen)) + ggtitle("Senior Citizen") + xlab("Senior Citizen") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+p3 <- ggplot(Churn_Dataset, aes(x=Partner)) + ggtitle("Partner") + xlab("Partner") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+p4 <- ggplot(Churn_Dataset, aes(x=Dependents)) + ggtitle("Dependents") + xlab("Dependents") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+grid.arrange(p1, p2, p3, p4, ncol=2)
+```
+
+```{r}
+p5 <- ggplot(Churn_Dataset, aes(x=PhoneService)) + ggtitle("Phone Service") + xlab("Phone Service") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+p6 <- ggplot(Churn_Dataset, aes(x=MultipleLines)) + ggtitle("Multiple Lines") + xlab("Multiple Lines") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+p7 <- ggplot(Churn_Dataset, aes(x=InternetService)) + ggtitle("Internet Service") + xlab("Internet Service") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+p8 <- ggplot(Churn_Dataset, aes(x=OnlineSecurity)) + ggtitle("Online Security") + xlab("Online Security") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+grid.arrange(p5, p6, p7, p8, ncol=2)
+```
+
+```{r}
+p9 <- ggplot(Churn_Dataset, aes(x=OnlineBackup)) + ggtitle("Online Backup") + xlab("Online Backup") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+p10 <- ggplot(Churn_Dataset, aes(x=DeviceProtection)) + ggtitle("Device Protection") + xlab("Device Protection") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+p11 <- ggplot(Churn_Dataset, aes(x=TechSupport)) + ggtitle("Tech Support") + xlab("Tech Support") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+p12 <- ggplot(Churn_Dataset, aes(x=StreamingTV)) + ggtitle("Streaming TV") + xlab("Streaming TV") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+grid.arrange(p9, p10, p11, p12, ncol=2)
+
+```
+
+```{r}
+p13 <- ggplot(Churn_Dataset, aes(x=StreamingMovies)) + ggtitle("Streaming Movies") + xlab("Streaming Movies") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+p14 <- ggplot(Churn_Dataset, aes(x=Contract)) + ggtitle("Contract") + xlab("Contract") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+p15 <- ggplot(Churn_Dataset, aes(x=PaperlessBilling)) + ggtitle("Paperless Billing") + xlab("Paperless Billing") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+p16 <- ggplot(Churn_Dataset, aes(x=PaymentMethod)) + ggtitle("Payment Method") + xlab("Payment Method") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+p17 <- ggplot(Churn_Dataset, aes(x=tenure_group)) + ggtitle("Tenure Group") + xlab("Tenure Group") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+grid.arrange(p13, p14, p15, p16, p17, ncol=2)
+```
+#-------------------------------------------------------------------------------
+# 3.Split the dataset into 80 training/20 test set and fit a decision tree to the training data. 
+# Plot the tree, and interpret the results. (10 points)
+#-------------------------------------------------------------------------------
+
+#Build the models : 
+#Decision tree models can handle categorical variables without one-hot encoding them, and one-hot encoding will degrad
+#split the dataset to training and testing 
+```{r}
+intrain<- sample.int(n = nrow(Churn_Dataset), size = floor(.8*nrow(Churn_Dataset)), replace = F)
+
+set.seed(2017)
+training<- Churn_Dataset[intrain,]
+testing<- Churn_Dataset[-intrain,]
+
+training <- as.data.frame(lapply(training, unlist))
+testing <- as.data.frame(lapply(testing, unlist))
+
+drop <- c("Churn")
+X_train = training[,!(names(training) %in% drop)]
+y_train = training["Churn"]
+
+X_test = testing[,!(names(testing) %in% drop)]
+y_test = testing["Churn"]
+
+X_test_for_ROC = X_test
+y_test_for_ROC = y_test
+```
+#*****************************************************************************************
+#build the tree with all of the features 
+```{r}
+library(party)
+library(rpart)
+library(rpart.plot)
+DT <- rpart(Churn ~. , data = training, method = "class", control = rpart.control((cp = 0.05)))
+# plot the tree
+rpart.plot(DT,extra='auto')
+```
+
+#confusion matrix for Decision tree  for the training data 
+```{r}
+pred_tree_train_prediction <- predict(DT,X_train, type = "class")
+CM_train = confusionMatrix(table(pred_tree_train_prediction,y_train$Churn))
+print("Confusion Matrix for Decision Tree for training data"); 
+CM_train
+```
+#confusion matrix for Decision tree  for the testing data 
+```{r}
+pred_tree_test_prediction <- predict(DT,X_test, type = "class")
+CM_test = confusionMatrix(table(pred_tree_test_prediction,y_test$Churn))
+print("Confusion Matrix for Decision Tree for testing data"); 
+CM_test
+```
+#calculating the accuracy ot the model 
+```{r}
+tab1 <- table(Predicted = pred_tree_train_prediction, Actual = y_train$Churn)
+tab2 <- table(Predicted = pred_tree_test_prediction, Actual = y_test$Churn)
+DT_Base_train_accuracy = sum(diag(tab1))/sum(tab1)
+DT_Base_test_accuracy  = sum(diag(tab2))/sum(tab2)
+print(paste('Decision Tree Training Accuracy with all feature :',DT_Base_train_accuracy))
+print(paste('Decision Tree Testing  Accuracy with all feature :',DT_Base_test_accuracy))
+```
+#================================================================================================
+# 4. Try different ways to improve the decision tree algorithm (e.g., use different splitting strategies, prune
+# tree after splitting). Does pruning the tree improves the accuracy?
+# ---------------------------------------------------------------------------------------------
+
+# use different splitting strartegy "information gain" and see the effect of using it on the model accuracy
+```{r}
+# build the tree using information gain strategy
+DT_information_gain <- rpart(training$Churn~ ., data = X_train, method = 'class',parms = list(split ="information"))
+# plot the tree
+rpart.plot(DT_information_gain,extra='auto')
+```
+
+
+#confusion matrix for Decision tree  for the training data 
+```{r}
+pred_tree_train_prediction_IG <- predict(DT_information_gain,X_train, type = "class")
+CM_train_IG = confusionMatrix(table(pred_tree_train_prediction_IG,y_train$Churn))
+print("Confusion Matrix for Decision Tree for training data"); 
+CM_train_IG
+```
+#confusion matrix for Decision tree  for the testing data 
+```{r}
+pred_tree_test_prediction_IG <- predict(DT_information_gain,X_test, type = "class")
+CM_test_IG = confusionMatrix(table(pred_tree_test_prediction_IG,y_test$Churn))
+print("Confusion Matrix for Decision Tree for training data"); 
+CM_test_IG
+```
+
+
+#calculating the accuracy ot the model  with information gain as a splitting strategy
+```{r}
+tab1_IG <- table(Predicted = pred_tree_train_prediction_IG, Actual = y_train$Churn)
+tab2_IG <- table(Predicted = pred_tree_test_prediction_IG, Actual = y_test$Churn)
+
+DT_IG_train_accuracy = sum(diag(tab1_IG))/sum(tab1_IG)
+DT_IG_test_accuracy = sum(diag(tab2_IG))/sum(tab2_IG)
+
+print(paste('Decision Tree Training Accuracy with information gain :',DT_IG_train_accuracy))
+print(paste('Decision Tree Testing  Accuracy with information gain :',DT_IG_test_accuracy))
+```
+comment on the accuracy of decision tree with using different splitting strategy : 
+when i used information gain as a splitting strategy the accuracy has not change dramatically 
+- in the two different splitting strategy the accuracy of the training is a bit higher than the accuracy of the testing data
+which mean that decision tree overfit. because it can not generalize correctly. 
+#================================================================================================
+# Prepruning 
+Prepruning is also known as early stopping criteria. As the name suggests, the criteria are set as parameter values while building the rpart model
+```{r}
+# Grow a tree with minsplit of 100 and max depth of 8
+
+decision_tree_preprun = rpart(training$Churn~ ., data = X_train, method = "class",control = rpart.control(cp = 0.0001, maxdepth = 17,minsplit = 30))
+# plot the tree
+#rpart.plot(decision_tree_preprun,extra='auto')
+# the prediction using the train data 
+y_pred_train_preprun_accuracy = predict(decision_tree_preprun, X_train, type = "class")
+# the prediction using the test data 
+y_pred_test_preprun_accuracy = predict(decision_tree_preprun, X_test, type = "class")
+# confucion matrix for the result of using training data 
+train_preprune_DT_CM=confusionMatrix(table(y_train$Churn,y_pred_train_preprun_accuracy))
+# confucion matrix for the result of using testing data 
+test_preprune_DT_CM=confusionMatrix(table(y_test$Churn,y_pred_test_preprun_accuracy))
+#calculating the accuracy 
+tab1_pre <- table(Predicted = y_pred_train_preprun_accuracy, Actual = y_train$Churn)
+tab2_pre <- table(Predicted = y_pred_test_preprun_accuracy, Actual = y_test$Churn)
+print("the confusion matix of Decsion tree with preprune strategy using the training data")
+print(train_preprune_DT_CM)
+print("the confusion matix of Decsion tree with preprune strategy using the testing  data")
+print(test_preprune_DT_CM)
+
+DT_pre_train_accuracy = sum(diag(tab1))/sum(tab1)
+DT_pre_test_accuracy = sum(diag(tab2))/sum(tab2)
+
+print(paste('Decision Tree Training Accuracy by using preprune :',DT_pre_train_accuracy))
+print(paste('Decision Tree Testing  Accuracy by using preprune :',DT_pre_test_accuracy))
+
+```
+as the results shows the model overfitt because the training error is low but the testing error is high 
+which means that the algorithm cann't generalize correctly. 
+
+# Postprune the tree and see the effect on the accuracy 
+The idea here is to allow the decision tree to grow fully and observe the CP value. Next, we prune/cut the tree with the optimal CP value
+```{r}
+#Postpruning
+
+# Prune the DT_base_model based on the optimal cp value
+decision_tree_postpruned <- prune(DT, cp = 0.0084)
+# plot the tree
+#rpart.plot(decision_tree_preprun,extra='auto')
+# the prediction using the train data 
+y_pred_train_postpruned_accuracy = predict(decision_tree_postpruned, X_train, type = "class")
+# the prediction using the test data 
+y_pred_test_postpruned_accuracy = predict(decision_tree_postpruned, X_test, type = "class")
+# confucion matrix for the result of using training data 
+train_postpruned_DT_CM=confusionMatrix(table(y_train$Churn,y_pred_train_postpruned_accuracy))
+# confucion matrix for the result of using testing data 
+test_postpruned_DT_CM=confusionMatrix(table(y_test$Churn,y_pred_test_postpruned_accuracy))
+#calculating the accuracy 
+tab1 <- table(Predicted = y_pred_train_postpruned_accuracy, Actual = y_train$Churn)
+tab2 <- table(Predicted = y_pred_test_postpruned_accuracy, Actual = y_test$Churn)
+print("the confusion matix of Decsion tree with postpruned strategy using the training data")
+print(train_postpruned_DT_CM)
+print("the confusion matix of Decsion tree with postpruned strategy using the testing  data")
+print(test_postpruned_DT_CM)
+
+DT_post_train_accuracy=sum(diag(tab1))/sum(tab1)
+DT_post_test_accuracy= sum(diag(tab2))/sum(tab2)
+
+print(paste('Decision Tree Training Accuracy by using postpruned :',DT_post_train_accuracy))
+print(paste('Decision Tree Testing  Accuracy by using postpruned :',DT_post_test_accuracy))
+```
+the model still overfit 
+#================================================================================================
+# 5.Classify the data using the XGBoost model with nrounds = 70 and max depth = 3.
+# Evaluate the performance. Is there any sign of overfitting? 
+#---------------------------------------------------------------------------------
+# preparing the dataset to build xgBoost
+with decision tree i used the categorical data because the accuracy degrades when i use the encoded data 
+but i will transfer the categorical data to numeric value before using it with xgBoost
+```{r}
+summary(Churn_Dataset)
+```
+
+#converting categorical variable to numeric values using LabelEncoder 
+```{r}
+#install.packages("superml")
+library(superml)
+
+lbl = LabelEncoder$new()
+Churn_Dataset$gender <-lbl$fit_transform(Churn_Dataset$gender)
+
+lbl = LabelEncoder$new()
+Churn_Dataset$SeniorCitizen <-lbl$fit_transform(Churn_Dataset$SeniorCitizen)
+
+lbl = LabelEncoder$new()
+Churn_Dataset$Partner <-lbl$fit_transform(Churn_Dataset$Partner)
+
+lbl = LabelEncoder$new()
+Churn_Dataset$Dependents <-lbl$fit_transform(Churn_Dataset$Dependents)
+
+lbl = LabelEncoder$new()
+Churn_Dataset$PhoneService <-lbl$fit_transform(Churn_Dataset$PhoneService)
+
+lbl = LabelEncoder$new()
+Churn_Dataset$MultipleLines<-lbl$fit_transform(Churn_Dataset$MultipleLines)
+
+lbl = LabelEncoder$new()
+Churn_Dataset$InternetService<-lbl$fit_transform(Churn_Dataset$InternetService)
+
+lbl = LabelEncoder$new()
+Churn_Dataset$OnlineSecurity<-lbl$fit_transform(Churn_Dataset$OnlineSecurity)
+
+lbl = LabelEncoder$new()
+Churn_Dataset$OnlineBackup<-lbl$fit_transform(Churn_Dataset$OnlineBackup)
+
+lbl = LabelEncoder$new()
+Churn_Dataset$DeviceProtection<-lbl$fit_transform(Churn_Dataset$DeviceProtection)
+
+lbl = LabelEncoder$new()
+Churn_Dataset$TechSupport<-lbl$fit_transform(Churn_Dataset$TechSupport)
+
+lbl = LabelEncoder$new()
+Churn_Dataset$StreamingTV<-lbl$fit_transform(Churn_Dataset$StreamingTV)
+
+lbl = LabelEncoder$new()
+Churn_Dataset$StreamingMovies<-lbl$fit_transform(Churn_Dataset$StreamingMovies)
+
+lbl = LabelEncoder$new()
+Churn_Dataset$Contract<-lbl$fit_transform(Churn_Dataset$Contract)
+
+lbl = LabelEncoder$new()
+Churn_Dataset$PaperlessBilling<-lbl$fit_transform(Churn_Dataset$PaperlessBilling)
+
+lbl = LabelEncoder$new()
+Churn_Dataset$PaymentMethod<-lbl$fit_transform(Churn_Dataset$PaymentMethod)
+
+lbl = LabelEncoder$new()
+Churn_Dataset$tenure_group<-lbl$fit_transform(Churn_Dataset$tenure_group)
+
+lbl = LabelEncoder$new()
+Churn_Dataset$Churn<-lbl$fit_transform(Churn_Dataset$Churn)
+```
+```{r}
+str(Churn_Dataset)
+```
+#split the dataset to training and testing 
+```{r}
+intrain<- createDataPartition(Churn_Dataset$Churn,p=0.8,list=FALSE)
+set.seed(2017)
+training<- Churn_Dataset[intrain,]
+testing<- Churn_Dataset[-intrain,]
+```
+
+```{r}
+drop <- c("Churn")
+X_train = training[,!(names(training) %in% drop)]
+y_train = training["Churn"]
+
+X_test = testing[,!(names(testing) %in% drop)]
+y_test = testing["Churn"]
+```
+
+#==================================================================================================
+#implementation of XGBoost 
+```{r}
+#install.packages('xgboost') 
+library(xgboost)
+```
+
+
+```{r}
+
+#define final training and testing sets
+xgb_train = xgb.DMatrix(data = as.matrix(X_train), label = y_train$Churn)
+xgb_test = xgb.DMatrix(data = as.matrix(X_test), label = y_test$Churn)
+
+#define watchlist
+watchlist = list(train=xgb_train, test=xgb_test)
+
+#fit XGBoost model and display training and testing data at each round
+#the max.depth argument specifies how deep to grow the individual decision trees.
+model = xgb.train(data = xgb_train, max.depth = 3, watchlist=watchlist, nrounds = 70)
+```
+is there is any sign of overfitting while using XGboost : 
+i checked the results of each iteration just to see the training and testing error each time 
+Beyond point [61], 
+the test RMSE actually begins to increase, which is a sign that we’re overfitting the training data.
+```{r}
+summary(model)
+```
+#use xgBoost model to make predictions on test data
+```{r}
+pred_test = predict(model, xgb_test)
+# print the first five predictions (in term of probability)
+pred_test[1:5]
+```
+#Convert prediction to factor type
+```{r}
+pred_y <- as.numeric(pred_test > 0.5)
+pred_y
+```
+#Create a confusion matrix for XGBoost model
+```{r}
+print("Confusion Matrix for xgBoost"); 
+tab4_xg <- confusionMatrix(table(Predicted = pred_y, Actual = y_test$Churn) )
+tab4_xg
+```
+```{r}
+xg_test_acc = sum(diag(tab4_xg))/sum(tab4_xg)
+print(paste('xgBoost Accuracy of testing data',xg_test_acc))
+```
+#===================================================================================
+
+# 6.Train a deep neural network using Keras with 3 dense layers. 
+# Try changing the activation function or dropout rate. What effects does any of these have on the result? 
+#-------------------------------------------------------------------------------
+
+```{r}
+#install.packages("keras")
+#install.packages("tensorflow")
+#install.packages("mlbench")
+#install.packages("neuralnet")
+#library(tensorflow)
+#install_tensorflow()
+```
+
+```{r}
+library(keras)
+library(mlbench) 
+library(dplyr)
+library(magrittr)
+library(neuralnet)
+library(tensorflow)
+```
+
+
+
+# Building the Neural network model 
+```{r}
+set.seed(42)
+nn_model <- keras_model_sequential()
+nn_model %>% 
+  layer_dense(units = 128, kernel_initializer = "uniform", activation = "relu", 
+              input_shape =ncol(subset(training, select= - c(Churn)))) %>% 
+  layer_dense( units = 64,kernel_initializer = "uniform",activation = "relu") %>% 
+  layer_dense(units = 1,kernel_initializer = "uniform",activation = "sigmoid")  %>%
+  compile(optimizer = 'adam', loss = 'binary_crossentropy', metrics = c('accuracy') )
+
+train_nn=fit(object = nn_model, 
+      x = as.matrix(subset(training, select= - c(Churn))), 
+      y =training$Churn, 
+      batch_size = 50, epochs =20, 
+      validation_split = 0.2 )
+```
+```{r}
+# build the confusion matrix for the neural network 
+y_pred_nuralNetwork_model = nn_model %>% predict(as.matrix(subset(testing, select= - c(Churn)))) %>% `>` (0.5) %>% k_cast("int32") %>% as.vector()
+test_nn=confusionMatrix(table(testing$Churn,y_pred_nuralNetwork_model))
+test_nn
+```
+```{r}
+tab5 <- table(Predicted = y_pred_nuralNetwork_model, Actual = y_test$Churn) 
+nn_test_acc = sum(diag(tab5))/sum(tab5)
+print(paste('neural network Accuracy of testing data:',nn_test_acc))
+```
+#===================================================================================
+# Building the Neural network model after changing the activation function and see the effect on the results 
+```{r}
+set.seed(42)
+nn_model_Tanh <- keras_model_sequential()
+nn_model_Tanh %>% 
+  layer_dense(units = 128, kernel_initializer = "uniform", activation = "tanh", 
+              input_shape =ncol(subset(training, select= - c(Churn)))) %>% 
+  layer_dense( units = 64,kernel_initializer = "uniform",activation = "tanh") %>% 
+  layer_dense(units = 1,kernel_initializer = "uniform",activation = "sigmoid")  %>%
+  compile(optimizer = 'adam', loss = 'binary_crossentropy', metrics = c('accuracy') )
+
+train_nn_Tanh=fit(object = nn_model_Tanh, 
+      x = as.matrix(subset(training, select= - c(Churn))), 
+      y =training$Churn, 
+      batch_size = 50, epochs =20, 
+      validation_split = 0.2 )
+```
+```{r}
+# build the confusion matrix for the neural network 
+y_pred_nuralNetwork_model_Tanh = nn_model_Tanh %>% predict(as.matrix(subset(testing, select= - c(Churn)))) %>% `>` (0.5) %>% k_cast("int32") %>% as.vector()
+test_nn_Tanh=confusionMatrix(table(testing$Churn,y_pred_nuralNetwork_model_Tanh))
+test_nn_Tanh
+```
+```{r}
+tab6 <- table(Predicted = y_pred_nuralNetwork_model_Tanh, Actual = y_test$Churn) 
+test_nn_Tanh_acc = sum(diag(tab6))/sum(tab6)
+print(paste('neural network Accuracy of testing data using Tanh activation function :',test_nn_Tanh_acc))
+```
+#=====================================================================================================================
+7.Compare the performance of the models in terms of the following criteria: precision, recall, accuracy, F-
+measure. Identify the model that performed best and worst according to each criterion. 
+
+# collecting all the confusion matrices based on the testing data for all the models 
+
+
+```{r}
+models_confusionMatrixs=list(CM_test,
+                             CM_test_IG,
+                             test_preprune_DT_CM,
+                             test_postpruned_DT_CM,
+                             tab4_xg,
+                             test_nn,
+                             test_nn_Tanh
+                           )
+models=list('Base Decision Tree','Decision Tree with info','Pre-pruning Decision Tree','Post-pruning Decision Tree','XGBoost','DNN model','DNN  with informationGain')
+```
+
+compare the performance of the models in term of the Precision 
+# compare all the models 
+```{r}
+idx=1
+min_idx=1
+max_idx=1
+maxi_precision=-9999
+mini_precision=99999
+for (p in models_confusionMatrixs)
+{
+  prec = p$byClass['Pos Pred Value']
+  print(models[idx])
+  print(prec)
+  print("==================================")
+  idx=idx+1
+}
+```
+# find the best precsion model
+```{r}
+idx=1
+min_idx=1 # by default the first element is the minimum 
+max_idx=1 # also by default the first element is the maximum 
+maxi_precision=-123456
+mini_precision=123456
+for (p in models_confusionMatrixs)
+{
+  # find the maximum value and updated the stored one
+  if (p$byClass['Pos Pred Value'] > maxi_precision)
+    {
+    maxi_precision=p$byClass['Pos Pred Value']
+    max_idx=idx
+  }
+  # find the maximum value and updated the stored one
+  if (p$byClass['Pos Pred Value'] < mini_precision)
+    {
+    mini_precision=p$byClass['Pos Pred Value']
+    min_idx=idx
+  }
+  #increase the index 
+  idx=idx+1
+}
+print("Best precision model")
+print(models[max_idx])
+print(maxi_precision)
+print("============================")
+
+print("Worest precision model")
+print(models[min_idx])
+print(mini_precision)
+print("============================")
+
+```
+compare the performance of the models in term of the recall
+```{r}
+idx=1
+min_idx=1
+max_idx=1
+maxi_recall=-123456
+mini_recall=123456
+for (p in models_confusionMatrixs)
+{
+  recall_value = p$byClass['Sensitivity']
+  print(models[idx])
+  print(recall_value)
+  print("==================================")
+  idx=idx+1
+}
+```
+
+#find the Best and the worst recall 
+```{r}
+idx=1
+min_idx=1
+max_idx=1
+maxi_recall=-123456
+mini_recall=123456
+for (p in models_confusionMatrixs)
+  {
+  # find the maximun recall value and updated the stored one
+  if (p$byClass['Sensitivity'] > maxi_recall)
+    {
+    maxi_recall=p$byClass['Sensitivity']
+    max_idx=idx
+  }
+  # find the minimum value and update the stored one
+  if (p$byClass['Sensitivity'] < mini_recall)
+    {
+    mini_recall=p$byClass['Sensitivity']
+    min_idx=idx
+  }
+  #increase the counter 
+  idx=idx+1
+}
+print("Best recall model")
+print(models[max_idx])
+print(maxi_recall)
+print("============================")
+
+print("Worest recall model")
+print(models[min_idx])
+print(mini_recall)
+print("============================")
+```
+compare all the model in term of accuracy 
+```{r}
+idx=1
+min_idx=1
+max_idx=1
+maxi_accuracy=-9999
+mini_accuracy=99999
+for (p in models_confusionMatrixs){
+  accuracy=p$overall['Accuracy'] 
+  print(models[idx])
+  print(accuracy)
+  print("==================================")
+  idx=idx+1
+}
+```
+find the Best and the worst Accuracy 
+```{r}
+idx=1
+min_idx=1
+max_idx=1
+maxi_accuracy=-123456
+mini_accuracy=123456
+for (p in models_confusionMatrixs){
+  #find the maximum accuracy and update the stored value
+  if (p$overall['Accuracy'] > maxi_accuracy){
+    maxi_accuracy=p$overall['Accuracy']
+    max_idx=idx
+  }
+  # find the minimum accuracy and update the stores value 
+  if (p$overall['Accuracy'] < mini_accuracy){
+    mini_accuracy=p$overall['Accuracy']
+    min_idx=idx
+  }
+  idx=idx+1
+}
+print("Best accuracy model")
+print(models[max_idx])
+print(maxi_accuracy)
+print("===========================================")
+
+print("Worest accuracy model")
+print(models[min_idx])
+print(mini_accuracy)
+print("===========================================")
+```
+compare all the model in terms of F1-score 
+```{r}
+idx=1
+min_idx=1
+max_idx=1
+maxi_F1_score=-123456
+mini_F1_score=123456
+for (p in models_confusionMatrixs){
+  f_score_value = f_measure = 2 * ((p$byClass['Pos Pred Value'] * p$byClass['Sensitivity']) / (p$byClass['Pos Pred Value'] + p$byClass['Sensitivity']))
+  print(models[idx])
+  print("f-score value")
+  print(f_score_value)
+  print("==================================")
+  idx=idx+1
+}
+```
+Best F1-score
+```{r}
+idx=1
+min_idx=1
+max_idx=1
+maxi_F1_score=-123456
+mini_F1_score=123123
+for (p in models_confusionMatrixs)
+  {
+  # find the f-score value and update the stored values for both the minimum and the maximum values 
+  f_measure = 2 * ((p$byClass['Pos Pred Value'] * p$byClass['Sensitivity']) / (p$byClass['Pos Pred Value'] + p$byClass['Sensitivity']))
+  if (f_measure > maxi_F1_score)
+    {
+    maxi_F1_score=f_measure
+    max_idx=idx
+    }
+  if (f_measure < mini_F1_score)
+    {
+    mini_F1_score=f_measure
+    min_idx=idx
+   }
+  idx=idx+1
+}
+print("Best F1_score model")
+print(models[max_idx])
+print(maxi_F1_score)
+print("====================================")
+
+print("Worest F1_score model")
+print(models[min_idx])
+print(mini_F1_score)
+print("====================================")
+```
+
+```{r}
+# models 
+#DT
+#DT_information_gain
+#decision_tree_preprun
+#decision_tree_postpruned
+#model
+#nn_model
+#nn_model_Tanh
+
+# DT Base 
+#CM_train
+#CM_test
+#DT_Base_train_accuracy
+#DT_Base_test_accuracy
+# DT IG 
+#CM_train_IG
+#CM_test_IG
+#DT_IG_train_accuracy
+#DT_IG_test_accuracy
+# DT prepruning 
+#train_preprune_DT_CM
+#test_preprune_DT_CM
+#DT_pre_train_accuracy
+#DT_pre_test_accuracy
+# DT Postpruning 
+#train_postpruned_DT_CM
+#test_postpruned_DT_CM
+#DT_post_train_accuracy
+#DT_post_test_accuracy
+# xgBoost
+#tab4_xg # for testing data
+#xg_test_acc
+# NN Relu
+#test_nn
+#nn_test_acc
+# NN Tanh
+#test_nn_Tanh
+#test_nn_Tanh_acc
+```
+
+#======================================================================================================================
+8.Use a ROC graph to compare the performance of the DT, XGboost & DNN techniques. 
+```{r}
+library('pROC')
+library(magrittr) # needs to be run every time you start R and want to use %>%
+library(dplyr)    # alternatively, this also loads %>%
+trained_models= 
+list(
+  DT,
+  DT_information_gain,
+  decision_tree_preprun,
+  decision_tree_postpruned,
+  model,
+  nn_model,
+  nn_model_Tanh
+)
+
+```
+
+```{r}
+library(pROC)
+#DT
+testrf_prob = predict(DT, X_test_for_ROC,type = "prob")
+roc <- roc(y_test_for_ROC$Churn, testrf_prob[,2], plot = TRUE, print.auc = TRUE)
+#XGboost
+testrf_prob = predict(model, xgb_test)
+roc <- roc(y_test$Churn, testrf_prob, plot = TRUE, print.auc = TRUE)
+#DNN technique
+testrf_prob = nn_model %>% predict(as.matrix(subset(testing, select= - c(Churn)))) 
+roc <- roc(y_test$Churn, testrf_prob, plot = TRUE, print.auc = TRUE)
+```
+#=====================================================================================================================
+Note that Part B in a seperated file, because some libraries works in a different version for R
+#References for part A:
+https://towardsdatascience.com/hands-on-churn-prediction-with-r-and-comparison-of-different-models-for-churn-prediction-4b79011a082a
+https://www.researchgate.net/publication/338735689_Bayes_Risk_Post-Pruning_in_Decision_Tree_to_Overcome_Overfitting_Problem_on_Customer_Churn_Classification
+https://dzone.com/articles/decision-trees-and-pruning-in-r
+https://www.statology.org/xgboost-in-r/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
